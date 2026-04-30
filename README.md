@@ -1,6 +1,6 @@
 # Hybrid Multimodal and Quantum Machine Learning Architectures\
 
-This repository contains the official code, models and experimental setups for my PhD research. The methodology investigates multimodal and hybrid fusion architectures and their effect on classification and prediction performance across medical, scientific and construction datasets[cite: 11].\
+This repository contains the official code, models and experimental setups for my PhD research. The methodology investigates multimodal and hybrid fusion architectures and their effect on classification and prediction performance across medical, scientific and construction datasets.
 \
 ## Overview of Studies\
 \
