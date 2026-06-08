@@ -1,5 +1,3 @@
-
-
 import os
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning,
@@ -46,7 +44,7 @@ BATCH_SIZE = 16
 MAX_LENGTH = 128
 LR = 2e-5
 
-MODELS_TO_RUN = ("BERT-only", "GPT2-only", "BERT+GPT2", "Multimodal")
+MODELS_TO_RUN = ("BERT-only", "GPT2-only", "ResNet18-only", "Multimodal")
 PROPOSED = "Multimodal"
 
 
@@ -89,7 +87,7 @@ def set_seed(seed):
 
 
 # ===========================================================================
-# Image transform (matches the original Study 2 code)
+# Image transform
 # ===========================================================================
 
 image_transform = transforms.Compose([
@@ -100,11 +98,11 @@ image_transform = transforms.Compose([
 
 
 # ===========================================================================
-# Datasets — text-only and text+image
+# Datasets — text-only, image-only, and text+image
 # ===========================================================================
 
 class TextOnlyDataset(Dataset):
-    """For BERT-only, GPT2-only, BERT+GPT2 (no image)."""
+    """For BERT-only and GPT2-only (no image)."""
 
     def __init__(self, df, bert_tok, gpt_tok, max_length=128):
         self.df = df.reset_index(drop=True)
@@ -139,9 +137,31 @@ class TextOnlyDataset(Dataset):
         }
 
 
+class ImageOnlyDataset(Dataset):
+    """For ResNet18-only (no text)."""
+
+    def __init__(self, df, img_dir, transform):
+        self.df = df.reset_index(drop=True)
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        img_path = os.path.join(self.img_dir, row["Image_filename"])
+        image = Image.open(img_path).convert("RGB")
+        image = self.transform(image)
+        label = 1 if row["Classification"] == "malignant" else 0
+        return {
+            "image": image,
+            "label": torch.tensor(label, dtype=torch.long),
+        }
+
+
 class TextImageDataset(Dataset):
-    """For the multimodal fusion. Same structure as the original
-    CustomTextImageDataset in your Study 2 code."""
+    """For the Multimodal fusion model."""
 
     def __init__(self, df, img_dir, bert_tok, gpt_tok, transform,
                  max_length=128):
@@ -216,47 +236,29 @@ class GPT2OnlyClassifier(nn.Module):
     def forward(self, gpt_input_ids, gpt_attention_mask, **_):
         out = self.gpt(input_ids=gpt_input_ids,
                        attention_mask=gpt_attention_mask)
-        # Last-token pooling, matching your original Study 2 design
         return self.classifier(out.last_hidden_state[:, -1, :])
 
 
-class BertGPT2Fusion(nn.Module):
-    """Text-only fusion: BERT [CLS] + GPT-2 last token, projected to 128 each
-    and concatenated to a 256-dim vector before classification.
-
-    Same architecture as the multimodal model but with the ResNet stream
-    removed, so the comparison isolates the contribution of the visual
-    stream specifically."""
+class ResNet18OnlyClassifier(nn.Module):
+    """Image-only baseline: ResNet-18 with a replaced classification head."""
 
     def __init__(self, num_classes=2):
         super().__init__()
-        self.bert = BertModel.from_pretrained("bert-base-uncased")
-        self.gpt = GPT2Model.from_pretrained("gpt2")
-        self.bert_proj = nn.Linear(self.bert.config.hidden_size, 128)
-        self.gpt_proj  = nn.Linear(self.gpt.config.n_embd, 128)
-        self.classifier = nn.Sequential(
+        self.resnet = models.resnet18(
+            weights=models.ResNet18_Weights.IMAGENET1K_V1
+        )
+        self.resnet.fc = nn.Sequential(
             nn.Dropout(0.5),
-            nn.Linear(128 * 2, num_classes),
+            nn.Linear(self.resnet.fc.in_features, num_classes),
         )
 
-    def forward(self, bert_input_ids, bert_attention_mask,
-                gpt_input_ids, gpt_attention_mask, **_):
-        b = self.bert(input_ids=bert_input_ids,
-                      attention_mask=bert_attention_mask)
-        bf = self.bert_proj(b.pooler_output)
-        g = self.gpt(input_ids=gpt_input_ids,
-                     attention_mask=gpt_attention_mask)
-        gf = self.gpt_proj(g.last_hidden_state[:, -1, :])
-        combined = torch.cat((bf, gf), dim=1)
-        return self.classifier(combined)
+    def forward(self, image, **_):
+        return self.resnet(image)
 
 
 class MultimodalClassifier(nn.Module):
     """The proposed model: BERT + GPT-2 + ResNet-18, mid-level concatenation
-    fusion to a 384-dim vector before classification.
-
-    This is identical to the BERTGPT2ImageClassifier in your original code.
-    """
+    fusion to a 384-dim vector before classification."""
 
     def __init__(self, num_classes=2):
         super().__init__()
@@ -296,15 +298,19 @@ def train_and_evaluate(model_name, train_loader, val_loader, device):
     """
     if model_name == "BERT-only":
         model = BertOnlyClassifier(num_classes=2)
+        needs_text  = True
         needs_image = False
     elif model_name == "GPT2-only":
         model = GPT2OnlyClassifier(num_classes=2)
+        needs_text  = True
         needs_image = False
-    elif model_name == "BERT+GPT2":
-        model = BertGPT2Fusion(num_classes=2)
-        needs_image = False
+    elif model_name == "ResNet18-only":
+        model = ResNet18OnlyClassifier(num_classes=2)
+        needs_text  = False
+        needs_image = True
     elif model_name == "Multimodal":
         model = MultimodalClassifier(num_classes=2)
+        needs_text  = True
         needs_image = True
     else:
         raise ValueError(model_name)
@@ -318,12 +324,12 @@ def train_and_evaluate(model_name, train_loader, val_loader, device):
         model.train()
         for batch in train_loader:
             optimiser.zero_grad()
-            kwargs = {
-                "bert_input_ids":      batch["bert_input_ids"].to(device),
-                "bert_attention_mask": batch["bert_attention_mask"].to(device),
-                "gpt_input_ids":       batch["gpt_input_ids"].to(device),
-                "gpt_attention_mask":  batch["gpt_attention_mask"].to(device),
-            }
+            kwargs = {}
+            if needs_text:
+                kwargs["bert_input_ids"]      = batch["bert_input_ids"].to(device)
+                kwargs["bert_attention_mask"] = batch["bert_attention_mask"].to(device)
+                kwargs["gpt_input_ids"]       = batch["gpt_input_ids"].to(device)
+                kwargs["gpt_attention_mask"]  = batch["gpt_attention_mask"].to(device)
             if needs_image:
                 kwargs["image"] = batch["image"].to(device)
             logits = model(**kwargs)
@@ -336,12 +342,12 @@ def train_and_evaluate(model_name, train_loader, val_loader, device):
     y_true, y_pred, y_prob = [], [], []
     with torch.no_grad():
         for batch in val_loader:
-            kwargs = {
-                "bert_input_ids":      batch["bert_input_ids"].to(device),
-                "bert_attention_mask": batch["bert_attention_mask"].to(device),
-                "gpt_input_ids":       batch["gpt_input_ids"].to(device),
-                "gpt_attention_mask":  batch["gpt_attention_mask"].to(device),
-            }
+            kwargs = {}
+            if needs_text:
+                kwargs["bert_input_ids"]      = batch["bert_input_ids"].to(device)
+                kwargs["bert_attention_mask"] = batch["bert_attention_mask"].to(device)
+                kwargs["gpt_input_ids"]       = batch["gpt_input_ids"].to(device)
+                kwargs["gpt_attention_mask"]  = batch["gpt_attention_mask"].to(device)
             if needs_image:
                 kwargs["image"] = batch["image"].to(device)
             logits = model(**kwargs)
@@ -421,13 +427,20 @@ def main():
             stratify=df["Classification"],
         )
 
-        # Two dataset variants per seed (text-only and text+image)
+        # Three dataset variants per seed
         train_text_ds = TextOnlyDataset(train_df, bert_tok, gpt_tok, MAX_LENGTH)
         val_text_ds   = TextOnlyDataset(val_df,   bert_tok, gpt_tok, MAX_LENGTH)
         train_text_loader = DataLoader(train_text_ds, batch_size=BATCH_SIZE,
                                        shuffle=True)
         val_text_loader   = DataLoader(val_text_ds,   batch_size=BATCH_SIZE,
                                        shuffle=False)
+
+        train_img_ds = ImageOnlyDataset(train_df, IMG_DIR, image_transform)
+        val_img_ds   = ImageOnlyDataset(val_df,   IMG_DIR, image_transform)
+        train_img_loader = DataLoader(train_img_ds, batch_size=BATCH_SIZE,
+                                      shuffle=True)
+        val_img_loader   = DataLoader(val_img_ds,   batch_size=BATCH_SIZE,
+                                      shuffle=False)
 
         train_mm_ds = TextImageDataset(train_df, IMG_DIR, bert_tok, gpt_tok,
                                        image_transform, MAX_LENGTH)
@@ -443,10 +456,12 @@ def main():
                 print(f"  [skip] {model_name} (already done)")
                 continue
 
-            train_loader = (train_mm_loader if model_name == "Multimodal"
-                            else train_text_loader)
-            val_loader   = (val_mm_loader   if model_name == "Multimodal"
-                            else val_text_loader)
+            if model_name in ("BERT-only", "GPT2-only"):
+                train_loader, val_loader = train_text_loader, val_text_loader
+            elif model_name == "ResNet18-only":
+                train_loader, val_loader = train_img_loader, val_img_loader
+            else:  # Multimodal
+                train_loader, val_loader = train_mm_loader, val_mm_loader
 
             print(f"  Training {model_name}...", end=" ", flush=True)
             try:
