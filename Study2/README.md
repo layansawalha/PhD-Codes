@@ -4,12 +4,12 @@ This directory contains the code to test whether a mid-level fusion of BERT, GPT
 
 ## Overview
 
-The `Code.py` script evaluates four model architectures (BERT-only, GPT2-only, BERT+GPT2, and the proposed Multimodal fusion) across multiple random seeds, reporting calibration-aware metrics and statistical significance testing.
+The `Code.py` script evaluates four model architectures (BERT-only, GPT2-only, ResNet18-only, and the proposed Multimodal fusion) across multiple random seeds, reporting calibration-aware metrics and statistical significance testing.
 
 ## Key Features
 
 - **Data Handling**: Loads clinical text (symptoms and diagnosis) and paired ultrasound images from the BrEaST-Lesions USG Excel sheet and image directory.
-- **Multiple Baselines**: Implements BERT-only, GPT2-only, and BERT+GPT2 text-fusion baselines alongside the proposed multimodal model, enabling controlled ablation.
+- **Multiple Baselines**: Implements BERT-only, GPT2-only, and ResNet18-only single-modality baselines alongside the proposed multimodal model, enabling controlled ablation.
 - **Metrics**: Records accuracy, ROC-AUC, Brier score, and Expected Calibration Error (ECE) for comprehensive and calibration-aware evaluation.
 - **Checkpointing**: Automatically saves results to a CSV after every `(seed, model)` combination so interrupted Kaggle sessions can resume seamlessly.
 - **Statistical Testing**: Runs Wilcoxon signed-rank tests across 7 seeds to measure statistical significance of the proposed model over each baseline.
@@ -65,7 +65,7 @@ BrEaST-Lesions USG Record
 |-------|-------|--------|
 | BERT-only | Clinical text | BERT [CLS] pooler output → classifier |
 | GPT2-only | Clinical text | GPT-2 last-token hidden state → classifier |
-| BERT+GPT2 | Clinical text | Projected BERT + GPT-2 concatenated (256 dims) → classifier |
+| ResNet18-only | Ultrasound image | ResNet-18 (ImageNet weights) → 512 dims → classifier |
 | **Multimodal** *(proposed)* | Text + image | Projected BERT + GPT-2 + ResNet-18 concatenated (384 dims) → classifier |
 
 ## Configuration
