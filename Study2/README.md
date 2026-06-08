@@ -1,186 +1,96 @@
-Study 2: Multimodal Breast Lesion Classification Using Clinical Text and Ultrasound Images
+# Study 2: Multimodal Breast Lesion Ultrasound Classification
 
-This directory contains the code to evaluate whether a mid-level fusion of BERT, GPT-2 and ResNet-18 representations outperforms text-only baselines for breast lesion classification using clinical text descriptions and diagnostic ultrasound images.
+This directory contains the code to test whether a mid-level fusion of BERT, GPT-2 and ResNet-18 representations outperforms single-modality baselines on binary malignancy classification using the BrEaST-Lesions USG dataset.
 
-Overview
+## Overview
 
-The study2_full_analysis.py script evaluates four different architectures across multiple random seeds to validate the proposed multimodal fusion framework on the BrEaST-Lesions-USG dataset.
+The `Code.py` script evaluates four model architectures (BERT-only, GPT2-only, BERT+GPT2, and the proposed Multimodal fusion) across multiple random seeds, reporting calibration-aware metrics and statistical significance testing.
 
-Key Features
+## Key Features
 
-Data Handling: Processes both clinical text descriptions (symptoms and diagnosis information) and ultrasound images from the BrEaST-Lesions-USG dataset.
+- **Data Handling**: Loads clinical text (symptoms and diagnosis) and paired ultrasound images from the BrEaST-Lesions USG Excel sheet and image directory.
+- **Multiple Baselines**: Implements BERT-only, GPT2-only, and BERT+GPT2 text-fusion baselines alongside the proposed multimodal model, enabling controlled ablation.
+- **Metrics**: Records accuracy, ROC-AUC, Brier score, and Expected Calibration Error (ECE) for comprehensive and calibration-aware evaluation.
+- **Checkpointing**: Automatically saves results to a CSV after every `(seed, model)` combination so interrupted Kaggle sessions can resume seamlessly.
+- **Statistical Testing**: Runs Wilcoxon signed-rank tests across 7 seeds to measure statistical significance of the proposed model over each baseline.
+- **GPU Support**: Automatic detection and acceleration on T4 GPU.
 
-Model Comparison: Evaluates four architectures:
+## Usage
 
-* BERT-only (clinical text)
-* GPT-2-only (clinical text)
-* Resnet-only (images)
-* Proposed Multimodal (BERT+GPT2+ResNet-18)
+This script is configured for a Kaggle notebook environment with a T4 GPU. Update the `EXCEL_PATH` and `IMG_DIR` variables in the configuration section to point to the correct Kaggle input directories.
 
-Mid-Level Fusion: Combines projected feature representations from BERT, GPT-2, and ResNet-18 through feature concatenation before classification.
-
-Metrics: Records accuracy, ROC-AUC, Brier Score, and Expected Calibration Error (ECE) to evaluate both classification performance and probability calibration.
-
-Checkpointing: Automatically saves results after every model-seed combination, enabling interrupted Kaggle sessions to resume without loss of progress.
-
-Statistical Testing: Performs Wilcoxon signed-rank tests across 7 random seeds to assess whether the proposed multimodal model significantly outperforms the text-only baselines.
-
-GPU Support: Automatic CUDA detection and acceleration for Kaggle T4 GPU environments.
-
-Usage
-
-This script is configured for a Kaggle notebook environment with a T4 GPU. Update the EXCEL_PATH and IMG_DIR variables in the configuration section to point to the correct dataset locations before execution.
-
-Run directly in a Kaggle notebook:
-
-exec(open("study2_full_analysis.py").read())
+```python
+# Run directly in Kaggle notebook
+exec(open("Code.py").read())
+```
 
 Or run locally:
 
-python study2_full_analysis.py
-
-Outputs
-
-The script generates three CSV files in the /kaggle/working/ directory:
-
-study2_per_seed_results.csv
-
-* Raw results for each model and random seed.
-* Includes accuracy, ROC-AUC, Brier Score, and Expected Calibration Error.
-
-study2_summary.csv
-
-* Mean and standard deviation of all metrics across the 7 random seeds.
-* Provides overall model comparison.
-
-study2_wilcoxon.csv
-
-* Wilcoxon signed-rank test results comparing the proposed multimodal model against each baseline model.
-* Reports statistical significance and effect direction.
-
-Architecture
-
-BERT-only Baseline
-
-Clinical Text
-↓
-BERT Encoder
-↓
-[CLS] Representation (768 dims)
-↓
-Dropout + Linear Layer
-↓
-Classification
-
-GPT-2-only Baseline
-
-Clinical Text
-↓
-GPT-2 Encoder
-↓
-Last Token Representation (768 dims)
-↓
-Dropout + Linear Layer
-↓
-Classification
-
-BERT+GPT2 Text Fusion
-
-Clinical Text
-├── BERT Encoder
-│   └── [CLS] Representation → Project to 128 dims
-│
-└── GPT-2 Encoder
-└── Last Token Representation → Project to 128 dims
-
-```
-            ↓
-    Concatenation (256 dims)
-            ↓
-  Dropout + Linear Layer
-            ↓
-      Classification
+```bash
+python Code.py
 ```
 
-Proposed Multimodal Fusion
+## Outputs
 
-Clinical Text + Ultrasound Image
-├── BERT Encoder
-│   └── [CLS] Representation → Project to 128 dims
-│
-├── GPT-2 Encoder
-│   └── Last Token Representation → Project to 128 dims
-│
-└── Ultrasound Image
-└── ResNet-18 → 128 dims
+The script generates three CSV files in the `/kaggle/working/` directory:
+
+- **`study2_per_seed_results.csv`**: Raw results for each `(seed, model)` combination with accuracy, ROC-AUC, Brier score, and ECE.
+- **`study2_summary.csv`**: Mean and standard deviation of all metrics across all 7 seeds, sorted by accuracy.
+- **`study2_wilcoxon.csv`**: Wilcoxon signed-rank test results comparing the proposed Multimodal model against each baseline (`alternative='greater'`).
+
+## Architecture
+
+### Proposed Multimodal Fusion
 
 ```
-            ↓
- Mid-Level Feature Fusion
- Concatenation (384 dims)
-            ↓
-  Dropout + Linear Layer
-            ↓
-      Classification
+BrEaST-Lesions USG Record
+    ├── Clinical Text (BERT tokenization)
+    │   └── BERT [CLS] token → 768 dims → Project to 128 dims
+    │
+    ├── Clinical Text (GPT-2 tokenization)
+    │   └── GPT-2 last token → 768 dims → Project to 128 dims
+    │
+    └── Ultrasound Image
+        └── ResNet-18 (ImageNet weights) → 512 dims → Project to 128 dims
+
+                    ↓
+        Mid-level Concatenation Fusion: 384 dims
+                    ↓
+    Classification Head (dropout + linear) → 2 classes (benign / malignant)
 ```
 
-Configuration
+### Baselines
 
-Key hyperparameters in study2_full_analysis.py:
+| Model | Input | Fusion |
+|-------|-------|--------|
+| BERT-only | Clinical text | BERT [CLS] pooler output → classifier |
+| GPT2-only | Clinical text | GPT-2 last-token hidden state → classifier |
+| BERT+GPT2 | Clinical text | Projected BERT + GPT-2 concatenated (256 dims) → classifier |
+| **Multimodal** *(proposed)* | Text + image | Projected BERT + GPT-2 + ResNet-18 concatenated (384 dims) → classifier |
 
-Parameter                Value
-SEEDS                    (42, 7, 123, 999, 2023, 8888, 7777)
-EPOCHS                   5
-BATCH_SIZE               16
-MAX_LENGTH               128
-LEARNING_RATE            2e-5
-IMAGE_SIZE               224 × 224
-BERT_PROJECTION          128
-GPT2_PROJECTION          128
-RESNET_OUTPUT            128
+## Configuration
 
-Dataset
+Key hyperparameters in `Code.py`:
 
-BrEaST-Lesions-USG Dataset
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `SEEDS` | (42, 7, 123, 999, 2023, 8888, 7777) | 7 random seeds for reproducibility |
+| `EPOCHS` | 5 | Training epochs per seed |
+| `BATCH_SIZE` | 16 | Batch size |
+| `MAX_LENGTH` | 128 | Max token length for text |
+| `LR` | 2e-5 | Adam learning rate |
+| `FUSION_DIM` | 128 | Per-stream projection dimension (384 total after concat) |
 
-Input Modalities:
+## Requirements
 
-* Clinical text descriptions (Symptoms and Diagnosis fields)
-* Diagnostic ultrasound images
+See `../Requirements.txt` for full dependency list. Key packages:
+- `torch`, `torchvision`
+- `transformers` (BERT, GPT-2)
+- `openpyxl` (Excel data loading)
+- `scikit-learn`
+- `scipy` (Wilcoxon test)
+- `pandas`, `numpy`, `Pillow`
 
-Classification Task:
+## Citation
 
-* Benign vs Malignant breast lesion classification
-
-Image Processing:
-
-* Resize to 224 × 224 pixels
-* ImageNet normalization
-* RGB conversion
-
-Calibration Metrics
-
-In addition to conventional classification metrics, this study evaluates prediction calibration using:
-
-* Brier Score (lower is better)
-* Expected Calibration Error (ECE) (lower is better)
-
-These metrics assess the reliability of model confidence estimates, which is particularly important in medical decision-support applications.
-
-Requirements
-
-See ../Requirements.txt for full dependency information.
-
-Key packages:
-
-* torch, torchvision
-* transformers (BERT, GPT-2)
-* scikit-learn
-* scipy
-* pandas
-* numpy
-* Pillow
-
-Citation
-
-Part of PhD research investigating multimodal deep learning architectures for medical data classification through the integration of transformer-based language models and convolutional neural networks.
+Part of PhD research on hybrid multimodal and quantum machine learning architectures.
