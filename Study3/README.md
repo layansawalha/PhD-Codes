@@ -1,38 +1,89 @@
 # Study 3: Multimodal Scientific PDF Classification
 
-This directory contains the codebase for evaluating the multimodal fusion of BERT, GPT-2, and a ResNet-18 vision encoder on full-text scientific PDFs
+This directory contains the code to test whether a mid-level fusion of BERT, GPT-2 and ResNet-18 representations outperforms single-modality baselines on scientific PDF classification using extracted text and images.
 
 ## Overview
-This study tests whether a true multimodal architecture can outperform single-modality and classical baselines on complex scientific documents. It extracts both the text and embedded images (figures, tables) from PDFs to classify them into thematic clusters. To maintain a clean and focused evaluation, this pipeline specifically tests the primary multimodal hypothesis and omits exploratory ablation sweeps.
 
-## Key Components
+The `Code.py` script evaluates the proposed multimodal architecture across multiple random seeds to validate performance on the NUS-WIDE scientific PDF dataset.
 
-1.  **Data Extraction & Processing:** 
-    Uses PyMuPDF to extract text and up to 4 embedded images per document[cite: 20]. Text is tokenized for BERT and GPT-2, while images are normalized and resized for ResNet-18
-2.  **Baseline Models:** 
-    *   *Classical/Ensemble:* TF-IDF features trained on Logistic Regression, SVM, Random Forest, XGBoost, etc
-    *   *Single-Transformer:* BERT-only and GPT-2-only baselines to measure the exact value added by the fusion mechanism
-3.  **Proposed Multimodal Fusion:** 
-    A unified `MultimodalFusion` network that projects BERT (contextual text), GPT-2 (sequential text), and ResNet-18 (visual features) outputs into a shared latent space for joint classification
+## Key Features
 
-## Validation Strategy
-The study uses a multi-seed protocol (seeds 42, 7, and 123) with strict train/test splits. Pre-trained backbones are fine-tuned with a cautious learning rate to prevent catastrophic forgetting, and metrics (Accuracy, Precision, Recall, F1-score) are reported as a mean across all seeds to ensure robust, reproducible results
+- **Data Handling**: Extracts text and embedded images from scientific PDFs (with fallback to page rendering).
+- **Proposed Method Only**: Implements BERT + GPT-2 + ResNet-18 multimodal fusion with weighted sum aggregation.
+- **Metrics**: Records accuracy, precision, recall, and F1-score for comprehensive classification evaluation.
+- **Checkpointing**: Automatically saves results to a CSV after every seed so interrupted Kaggle sessions can resume seamlessly.
+- **Statistical Testing**: Runs Wilcoxon signed-rank tests across 7 seeds to measure statistical significance of performance.
+- **GPU Support**: Automatic detection and acceleration on T4 GPU.
 
-## Usage (Colab / Jupyter)
+## Usage
 
-To run the streamlined multimodal experiment without the overhead of ablation studies, upload this directory to your environment and run:
+This script is configured for a Kaggle notebook environment with a T4 GPU. Update the `PDF_DIR` and `IMAGE_CACHE_DIR` variables in the configuration section to point to the correct Kaggle input directories.
+
 ```python
-# 1. Install requirements
-!pip install pymupdf transformers scikit-learn torchvision --quiet
+# Run directly in Kaggle notebook
+exec(open("Code.py").read())
+```
 
-# 2. Run the core multimodal experiment
-from multimodal import run_multimodal_experiment
+Or run locally:
 
-results = run_multimodal_experiment(
-    pdf_directory="/content/data",
-    image_cache_dir="/content/pdf_images",
-    label_strategy="sbert_kmeans", 
-    seeds=(42, 7, 123),
-    epochs=5,
-    batch_size=8
-)
+```bash
+python Code.py
+```
+
+## Outputs
+
+The script generates three CSV files in the `/kaggle/working/` directory:
+
+- **`study3_per_seed_results.csv`**: Raw results for each seed with accuracy, precision, recall, and F1-score.
+- **`study3_summary.csv`**: Mean and standard deviation of metrics across all 7 seeds.
+- **`study3_wilcoxon.csv`**: Wilcoxon signed-rank test results comparing the proposed multimodal model against a random (50%) baseline.
+
+## Architecture
+
+### Proposed Multimodal Fusion
+
+```
+Scientific PDF
+    ├── Text Extraction (BERT tokenization)
+    │   └── BERT [CLS] token → 768 dims → Project to fusion_dim
+    │
+    ├── Text Extraction (GPT-2 tokenization)
+    │   └── GPT-2 last token → 768 dims → Project to fusion_dim
+    │
+    └── Image Extraction & Processing
+        ├── Extract up to 4 embedded images (figures, tables)
+        ├── Fallback: render first pages if insufficient embedded images
+        └── ResNet-18 (frozen) → 512 dims → Project to fusion_dim
+        
+                    ↓
+            Weighted Sum Fusion: fusion_dim
+                    ↓
+    Classification Head (dropout + linear) → n_classes
+```
+
+## Configuration
+
+Key hyperparameters in `Code.py`:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `SEEDS` | (42, 7, 123, 999, 2023, 8888, 7777) | 7 random seeds for reproducibility |
+| `EPOCHS` | 5 | Training epochs per seed |
+| `BATCH_SIZE` | 8 | Batch size (smaller due to image memory) |
+| `MAX_LENGTH` | 128 | Max token length for text |
+| `LEARNING_RATE` | 5e-5 | AdamW learning rate |
+| `FUSION_DIM` | 256 | Shared fusion dimension |
+| `N_IMAGES_PER_PDF` | 4 | Max images to extract per PDF |
+
+## Requirements
+
+See `../Requirements.txt` for full dependency list. Key packages:
+- `torch`, `torchvision`
+- `transformers` (BERT, GPT-2)
+- `pymupdf` (PDF image extraction)
+- `scikit-learn`
+- `pandas`, `numpy`, `Pillow`
+
+## Citation
+
+Part of PhD research on hybrid multimodal and quantum machine learning architectures.
