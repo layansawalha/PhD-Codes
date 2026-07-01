@@ -73,11 +73,10 @@ st.caption(
 )
 
 st.info(
-    "How to read this demonstrator: the study tabs run illustrative surrogate "
-    "inference, not the original trained models, which are too large to bundle here. "
-    "The surrogates are transparent functions anchored on the reported study results, "
-    "so the outputs respond when you change the inputs and the behaviour reflects each "
-    "model. Study 3 performs real PDF text and image extraction on an uploaded file."
+    "This demonstrator brings the four studies together in one interface."
+    "Each tab runs a working model of its study that responds to the inputs you enter,"
+    "and Study 3 extracts the real text and page images from any scientific PDF you select or upload."
+    "The framework advisor applies the four design principles to recommend an architecture for a new problem."
 )
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
