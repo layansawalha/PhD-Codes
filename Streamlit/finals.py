@@ -73,9 +73,9 @@ st.caption(
 )
 
 st.info(
-    "This demonstrator brings the four studies together in one interface."
-    "Each tab runs a working model of its study that responds to the inputs you enter,"
-    "and Study 3 extracts the real text and page images from any scientific PDF you select or upload."
+    "This demonstrator brings the four studies together in one interface. "
+    "Each tab runs a working model of its study that responds to the inputs you enter, "
+    "and Study 3 extracts the real text and page images from any scientific PDF you select or upload. "
     "The framework advisor applies the four design principles to recommend an architecture for a new problem."
 )
 
