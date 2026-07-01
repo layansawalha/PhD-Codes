@@ -64,10 +64,15 @@ st.caption(
 )
 
 st.info(
-    "This demonstrator brings the four studies together in one interface. "
-    "Each tab runs a working model of its study that responds to the inputs you enter, "
-    "and Study 3 extracts the real text and page images from any scientific PDF you select or upload. "
-    "The framework advisor applies the four design principles to recommend an architecture for a new problem."
+     "This tool brings four research studies together in one place, plus a fifth "
+    "tab that applies what they found. The first tab predicts whether a breast "
+    "cancer case is likely benign or malignant from patient data. The second "
+    "reads a breast ultrasound image together with the clinical notes to do the "
+    "same. The third reads a scientific PDF you upload and sorts it into a "
+    "topic. The fourth estimates the cost of a UK construction project. The "
+    "fifth, the framework advisor, takes a description of a new problem and "
+    "suggests how a similar tool could be built to solve it. Try each one with "
+    "your own inputs."
 )
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
