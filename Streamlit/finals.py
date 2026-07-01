@@ -16,15 +16,6 @@ USAGE:
     pip install streamlit numpy pandas matplotlib pillow pymupdf
     streamlit run hybrid_framework_app.py
 
-NOTE ON INFERENCE:
-    The study tabs run ILLUSTRATIVE SURROGATE inference, not the original trained
-    models (which are too large to bundle). Each surrogate is a transparent function
-    anchored on the reported study results, so outputs react to the inputs and the
-    behaviour reflects each model. Study 3 performs real PDF text and image
-    extraction on an uploaded file. Each surrogate is marked with a labelled block:
-        # ===== ILLUSTRATIVE SURROGATE =====
-    To enable true inference, load your trained model inside that block and replace
-    the surrogate output. Layout, captions and visualisations stay identical.
 ================================================================================
 """
 
