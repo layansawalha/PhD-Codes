@@ -43,6 +43,7 @@ EPOCHS = 5
 BATCH_SIZE = 16
 MAX_LENGTH = 128
 LR = 2e-5
+WEIGHT_DECAY = 0.01
 
 MODELS_TO_RUN = ("BERT-only", "GPT2-only", "ResNet18-only", "Multimodal")
 PROPOSED = "Multimodal"
@@ -316,7 +317,8 @@ def train_and_evaluate(model_name, train_loader, val_loader, device):
         raise ValueError(model_name)
 
     model = model.to(device)
-    optimiser = torch.optim.Adam(model.parameters(), lr=LR)
+    optimiser = torch.optim.AdamW(model.parameters(), lr=LR,
+                                  weight_decay=WEIGHT_DECAY)
     loss_fn = nn.CrossEntropyLoss()
 
     # Train
