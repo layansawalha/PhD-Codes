@@ -410,6 +410,13 @@ class MultimodalFusion(nn.Module):
             dropout=0.1,
         )
 
+        # Modality gate for the visual stream: initialised to -4 so
+        # sigmoid(gate) ≈ 0.018 at the start (defaults closed).
+        # The gate is learned during training and opens as visual
+        # features prove useful, preventing the vision backbone from
+        # dominating early in training when weights are random.
+        self.vision_gate = nn.Parameter(torch.tensor(-4.0))
+
         self.dropout    = nn.Dropout(DROPOUT)
         self.classifier = nn.Linear(FUSION_DIM, n_classes)
 
@@ -420,7 +427,9 @@ class MultimodalFusion(nn.Module):
         feat = feat.reshape(batch_size, n_images, -1)
         mask  = image_mask.unsqueeze(-1).float()
         denom = mask.sum(dim=1).clamp(min=1.0)
-        return (feat * mask).sum(dim=1) / denom
+        pooled = (feat * mask).sum(dim=1) / denom
+        # Apply the modality gate: scales the visual stream by sigmoid(gate)
+        return torch.sigmoid(self.vision_gate) * pooled
 
     def forward(self, bert_ids, bert_mask, gpt_ids, gpt_mask, images, image_mask, **_):
         h_bert   = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state[:, 0, :]
@@ -543,16 +552,41 @@ def main():
         return
     print(f"Found {len(pdf_paths)} PDFs\n")
 
-    # Load texts and labels
+    # Load texts from PDFs
     print("Loading text from PDFs...")
-    texts  = []
-    labels = []
-    for i, pdf_path in enumerate(pdf_paths):
-        texts.append(f"Sample text from {Path(pdf_path).stem}")
-        labels.append(i % N_CLUSTERS)
+    texts = []
+    kept_paths = []
+    for pdf_path in pdf_paths:
+        try:
+            doc  = fitz.open(pdf_path)
+            text = " ".join("".join(p.get_text("text") for p in doc).lower().split())
+            doc.close()
+        except Exception as e:
+            print(f"[warn] Could not read {pdf_path}: {e}")
+            text = ""
+        if text.strip():
+            texts.append(text)
+            kept_paths.append(pdf_path)
+    pdf_paths = kept_paths
+    print(f"Loaded {len(texts)} readable documents\n")
+
+    # Cluster with Sentence-BERT + KMeans (breaks TF-IDF circularity)
+    print("Generating labels via Sentence-BERT + KMeans...")
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        raise ImportError("pip install sentence-transformers")
+    from sklearn.cluster import KMeans
+
+    encoder  = SentenceTransformer("all-MiniLM-L6-v2")
+    snippets = [t[:2000] for t in texts]
+    embeddings = encoder.encode(snippets, show_progress_bar=False,
+                                convert_to_numpy=True, normalize_embeddings=True)
+    km     = KMeans(n_clusters=N_CLUSTERS, random_state=SEEDS[0], n_init=10)
+    labels = km.fit_predict(embeddings).tolist()
 
     n_classes = len(set(labels))
-    print(f"Loaded {len(texts)} documents with {n_classes} classes\n")
+    print(f"Documents: {len(texts)}, Classes: {n_classes}\n")
 
     # Extract / load cached images
     print("Extracting/loading cached images...")
