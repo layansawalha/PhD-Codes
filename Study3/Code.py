@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import subprocess
@@ -48,11 +49,12 @@ os.makedirs(IMG_CACHE, exist_ok=True)
 
 SEEDS      = (42, 7, 123, 999, 2023, 8888, 7777)
 N_CLUSTERS = 5
-MAX_LEN    = 256
-BATCH_SIZE = 4
+MAX_LEN    = 512
+BATCH_SIZE = 16
 MM_EPOCHS  = 5
 N_IMAGES   = 4
-FUSION_DIM = 512
+FUSION_DIM = 128
+DROPOUT    = 0.5
 DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ── Metric Helpers ─────────────────────────────────────────────────────────
@@ -105,33 +107,19 @@ def metrics_from_pairs(pairs, n_classes):
 class VisualAttentionPool(nn.Module):
     def __init__(self, in_dim=512):
         super().__init__()
-        self.query = nn.Parameter(torch.randn(in_dim) * 0.02)
-        self.proj  = nn.Linear(in_dim, in_dim)
+        self.attention = nn.Sequential(
+            nn.Linear(in_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 1)
+        )
 
     def forward(self, seq, mask):
-        scores  = (self.proj(seq) * self.query).sum(-1)
-        scores  = scores.masked_fill(~mask.bool(), float("-inf"))
+        scores = self.attention(seq).squeeze(-1)
+        scores = scores.masked_fill(~mask.bool(), float('-inf'))
         weights = F.softmax(scores, dim=-1).unsqueeze(-1)
-        return (seq * weights).sum(1)
+        return (seq * weights).sum(dim=1)
 
-class MaskedMultiScaleCNN(nn.Module):
-    def __init__(self, in_dim, n_filters=128, filter_sizes=(2, 3, 4, 5)):
-        super().__init__()
-        self.convs = nn.ModuleList([
-            nn.Conv1d(in_dim, n_filters, fs, padding=fs // 2)
-            for fs in filter_sizes])
-
-    def forward(self, seq, mask):
-        x = seq.transpose(1, 2)
-        feats = []
-        for conv in self.convs:
-            h = F.relu(conv(x))
-            L = min(h.size(-1), mask.size(-1))
-            h = h[..., :L].masked_fill(~mask[:, :L].unsqueeze(1).bool(), float("-inf"))
-            feats.append(torch.nan_to_num(h.max(-1).values, neginf=0.0))
-        return torch.cat(feats, dim=1)
-
-def _make_head(in_dim, n_classes, dropout=0.3):
+def _make_head(in_dim, n_classes, dropout=0.5):
     return nn.Sequential(
         nn.LayerNorm(in_dim), nn.Dropout(dropout),
         nn.Linear(in_dim, in_dim // 2), nn.GELU(),
@@ -139,10 +127,10 @@ def _make_head(in_dim, n_classes, dropout=0.3):
 
 # ─── Full proposed model ──────────────────────────────────────────────────────
 class MultimodalBertGptResNet(nn.Module):
-    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=0.3):
+    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=DROPOUT):
         super().__init__()
         self.bert  = AutoModel.from_pretrained("bert-base-uncased")
-        self.gpt2     = GPT2Model.from_pretrained("gpt2")
+        self.gpt2  = GPT2Model.from_pretrained("gpt2")
         h_bert = self.bert.config.hidden_size
         h_gpt = self.gpt2.config.hidden_size
 
@@ -150,80 +138,70 @@ class MultimodalBertGptResNet(nn.Module):
         self.vision_features = nn.Sequential(*list(resnet.children())[:-1])
         for p in self.vision_features.parameters():
             p.requires_grad = False
+        
         self.vis_pool = VisualAttentionPool(512)
 
-        self.bert_cnn = MaskedMultiScaleCNN(h_bert)
-        self.gpt_cnn  = MaskedMultiScaleCNN(h_gpt)
+        self.bert_proj = nn.Sequential(nn.Linear(h_bert, fusion_dim), nn.LayerNorm(fusion_dim), nn.GELU())
+        self.gpt_proj  = nn.Sequential(nn.Linear(h_gpt, fusion_dim), nn.LayerNorm(fusion_dim), nn.GELU())
+        self.vis_proj  = nn.Sequential(nn.Linear(512, fusion_dim), nn.LayerNorm(fusion_dim), nn.GELU())
 
-        self.bert_proj = nn.Sequential(
-            nn.Linear(128 * 4 + h_bert, fusion_dim), nn.LayerNorm(fusion_dim), nn.GELU())
-        self.gpt_proj = nn.Sequential(
-            nn.Linear(128 * 4 + h_gpt, fusion_dim), nn.LayerNorm(fusion_dim), nn.GELU())
-        self.vis_proj = nn.Sequential(
-            nn.Linear(512, fusion_dim), nn.LayerNorm(fusion_dim), nn.GELU())
+        self.mm_gate = nn.Parameter(torch.tensor([-4.0]))
 
-        self.text_gate = nn.Linear(2 * fusion_dim, fusion_dim)
-        nn.init.constant_(self.text_gate.bias, -2.0)
-        self.mm_gate   = nn.Linear(2 * fusion_dim, fusion_dim)
-        nn.init.zeros_(self.mm_gate.weight)
-        nn.init.constant_(self.mm_gate.bias, -4.0)
-
-        self.classifier = _make_head(fusion_dim, n_classes, dropout)
+        # Concatenation of 3 streams (128-d each) = 384-d fused representation
+        self.classifier = _make_head(fusion_dim * 3, n_classes, dropout)
 
     def _encode_images(self, images, image_mask):
         B, N, C, H, W = images.shape
         with torch.no_grad():
-            feat = self.vision_features(images.reshape(B * N, C, H, W)).reshape(B * N, -1)
-        return self.vis_pool(feat.reshape(B, N, -1), image_mask)
+            feat = self.vision_features(images.reshape(B * N, C, H, W)).reshape(B, N, -1)
+        return self.vis_pool(feat, image_mask)
 
-    def forward(self, bert_ids, bert_mask, gpt_ids, gpt_mask, images, image_mask):
-        bert_hs = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state
-        gpt_hs = self.gpt2(input_ids=gpt_ids,  attention_mask=gpt_mask).last_hidden_state
+    def forward(self, bert_ids, bert_mask, gpt_ids, gpt_mask, images, image_mask, **_):
+        bert_hs = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state[:, 0, :]
+        gpt_hs  = self.gpt2(input_ids=gpt_ids,  attention_mask=gpt_mask).last_hidden_state[:, -1, :]
 
-        h_bert = self.bert_proj(torch.cat([self.bert_cnn(bert_hs, bert_mask), bert_hs[:, 0]], 1))
-        h_gpt = self.gpt_proj(torch.cat([self.gpt_cnn(gpt_hs, gpt_mask), gpt_hs[:, -1]], 1))
+        h_bert = self.bert_proj(bert_hs)
+        h_gpt  = self.gpt_proj(gpt_hs)
+        
+        vis_hs = self._encode_images(images, image_mask)
+        h_vis  = self.vis_proj(vis_hs)
 
-        t_gate     = torch.sigmoid(self.text_gate(torch.cat([h_bert, h_gpt], 1)))
-        text_fused = h_bert + t_gate * h_gpt
+        mm_g   = torch.sigmoid(self.mm_gate)
+        h_vis_gated = mm_g * h_vis
 
-        h_vis  = self.vis_proj(self._encode_images(images, image_mask))
-        mm_g   = torch.sigmoid(self.mm_gate(torch.cat([text_fused, h_vis], 1)))
-        fused  = text_fused + mm_g * h_vis
+        fused = torch.cat([h_bert, h_gpt, h_vis_gated], dim=1)
+
         return self.classifier(fused)
 
 # ─── Ablation variants ────────────────────────────────────────────────────────
 class AblationBertOnly(nn.Module):
-    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=0.3):
+    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=DROPOUT):
         super().__init__()
         self.bert  = AutoModel.from_pretrained("bert-base-uncased")
         h = self.bert.config.hidden_size
-        self.cnn      = MaskedMultiScaleCNN(h)
-        self.proj     = nn.Sequential(nn.Linear(128 * 4 + h, fusion_dim),
-                                      nn.LayerNorm(fusion_dim), nn.GELU())
+        self.proj  = nn.Sequential(nn.Linear(h, fusion_dim),
+                                   nn.LayerNorm(fusion_dim), nn.GELU())
         self.classifier = _make_head(fusion_dim, n_classes, dropout)
 
     def forward(self, bert_ids, bert_mask, **_):
-        hs = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state
-        h  = self.proj(torch.cat([self.cnn(hs, bert_mask), hs[:, 0]], 1))
-        return self.classifier(h)
+        hs = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state[:, 0, :]
+        return self.classifier(self.proj(hs))
 
 class AblationGpt2Only(nn.Module):
-    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=0.3):
+    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=DROPOUT):
         super().__init__()
         self.gpt2     = GPT2Model.from_pretrained("gpt2")
         h = self.gpt2.config.hidden_size
-        self.cnn      = MaskedMultiScaleCNN(h)
-        self.proj     = nn.Sequential(nn.Linear(128 * 4 + h, fusion_dim),
+        self.proj     = nn.Sequential(nn.Linear(h, fusion_dim),
                                       nn.LayerNorm(fusion_dim), nn.GELU())
         self.classifier = _make_head(fusion_dim, n_classes, dropout)
 
     def forward(self, gpt_ids, gpt_mask, **_):
-        hs = self.gpt2(input_ids=gpt_ids, attention_mask=gpt_mask).last_hidden_state
-        h  = self.proj(torch.cat([self.cnn(hs, gpt_mask), hs[:, -1]], 1))
-        return self.classifier(h)
+        hs = self.gpt2(input_ids=gpt_ids, attention_mask=gpt_mask).last_hidden_state[:, -1, :]
+        return self.classifier(self.proj(hs))
 
 class AblationResNetOnly(nn.Module):
-    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=0.3):
+    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=DROPOUT):
         super().__init__()
         resnet = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
         self.vision_features = nn.Sequential(*list(resnet.children())[:-1])
@@ -237,34 +215,29 @@ class AblationResNetOnly(nn.Module):
     def forward(self, images, image_mask, **_):
         B, N, C, H, W = images.shape
         with torch.no_grad():
-            feat = self.vision_features(images.reshape(B * N, C, H, W)).reshape(B * N, -1)
-        h = self.proj(self.vis_pool(feat.reshape(B, N, -1), image_mask))
+            feat = self.vision_features(images.reshape(B * N, C, H, W)).reshape(B, N, -1)
+        h = self.proj(self.vis_pool(feat, image_mask))
         return self.classifier(h)
 
 class AblationBertGpt2Only(nn.Module):
-    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=0.3):
+    def __init__(self, n_classes, fusion_dim=FUSION_DIM, dropout=DROPOUT):
         super().__init__()
         self.bert   = AutoModel.from_pretrained("bert-base-uncased")
-        self.gpt2      = GPT2Model.from_pretrained("gpt2")
+        self.gpt2   = GPT2Model.from_pretrained("gpt2")
         h_bert = self.bert.config.hidden_size
         h_gpt = self.gpt2.config.hidden_size
-        self.bert_cnn   = MaskedMultiScaleCNN(h_bert)
-        self.gpt_cnn   = MaskedMultiScaleCNN(h_gpt)
-        self.bert_proj  = nn.Sequential(nn.Linear(128 * 4 + h_bert, fusion_dim),
+        self.bert_proj  = nn.Sequential(nn.Linear(h_bert, fusion_dim),
                                        nn.LayerNorm(fusion_dim), nn.GELU())
-        self.gpt_proj  = nn.Sequential(nn.Linear(128 * 4 + h_gpt, fusion_dim),
+        self.gpt_proj  = nn.Sequential(nn.Linear(h_gpt, fusion_dim),
                                        nn.LayerNorm(fusion_dim), nn.GELU())
-        self.text_gate = nn.Linear(2 * fusion_dim, fusion_dim)
-        nn.init.constant_(self.text_gate.bias, -2.0)
-        self.classifier = _make_head(fusion_dim, n_classes, dropout)
+        self.classifier = _make_head(fusion_dim * 2, n_classes, dropout)
 
     def forward(self, bert_ids, bert_mask, gpt_ids, gpt_mask, **_):
-        bert_hs = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state
-        gpt_hs = self.gpt2(input_ids=gpt_ids,  attention_mask=gpt_mask).last_hidden_state
-        h_bert  = self.bert_proj(torch.cat([self.bert_cnn(bert_hs, bert_mask), bert_hs[:, 0]], 1))
-        h_gpt  = self.gpt_proj(torch.cat([self.gpt_cnn(gpt_hs, gpt_mask), gpt_hs[:, -1]], 1))
-        gate   = torch.sigmoid(self.text_gate(torch.cat([h_bert, h_gpt], 1)))
-        return self.classifier(h_bert + gate * h_gpt)
+        bert_hs = self.bert(input_ids=bert_ids, attention_mask=bert_mask).last_hidden_state[:, 0, :]
+        gpt_hs  = self.gpt2(input_ids=gpt_ids,  attention_mask=gpt_mask).last_hidden_state[:, -1, :]
+        h_bert  = self.bert_proj(bert_hs)
+        h_gpt   = self.gpt_proj(gpt_hs)
+        return self.classifier(torch.cat([h_bert, h_gpt], dim=1))
 
 # ── LLRD Optimiser ────────────────────────────────────────────────────────
 def llrd_optimizer(model, base_lr=5e-5, decay=0.9, wd=0.01):
