@@ -514,5 +514,3 @@ for fold, (tr_idx, va_idx) in enumerate(skf.split(texts_arr, labels_arr)):
     fold_results.append({"fold": fold+1, "acc": acc, "f1": f1,
                           "auc": auc_v, "brier": brier_v, "ece": ece_v})
     del model; torch.cuda.empty_cache()
-
-```
